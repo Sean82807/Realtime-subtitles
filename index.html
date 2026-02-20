@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>실시간 자막</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;700;900&family=Space+Mono&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #13131a;
+    --border: #1f1f2e;
+    --accent: #5b6af0;
+    --accent2: #9f7aea;
+    --text: #f0f0ff;
+    --muted: #4a4a6a;
+    --green: #38ef7d;
+    --red: #ff4d6d;
+    --glow: rgba(91, 106, 240, 0.35);
+  }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Noto Sans KR', sans-serif;
+    overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+
+  /* ── 배경 그레인 + 그라디언트 ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 80% 60% at 20% 10%, rgba(91,106,240,0.12) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 50% at 80% 90%, rgba(159,122,234,0.10) 0%, transparent 55%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── 레이아웃 ── */
+  .app {
+    position: relative;
+    z-index: 1;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    gap: 12px;
+  }
+
+  /* ── 헤더 ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: 'Space Mono', monospace;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+  .brand-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+    animation: breathe 2s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+  }
+
+  /* 언어 선택 */
+  .lang-select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    outline: none;
+    cursor: pointer;
+    -webkit-appearance: none;
+  }
+
+  /* ── 자막 메인 패널 ── */
+  .subtitle-panel {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 28px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* 인식 중 테두리 효과 */
+  .subtitle-panel.active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent), 0 0 30px var(--glow);
+  }
+  .subtitle-panel.active::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 20px;
+    background: radial-gradient(ellipse 70% 40% at 50% 0%, rgba(91,106,240,0.07) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* 임시 텍스트 (인식 중) */
+  .interim-text {
+    font-size: clamp(15px, 4vw, 18px);
+    font-weight: 300;
+    color: var(--muted);
+    line-height: 1.6;
+    min-height: 28px;
+    letter-spacing: 0.02em;
+    transition: color 0.3s;
+    font-style: italic;
+  }
+
+  /* 확정 자막 */
+  .final-text {
+    font-size: clamp(22px, 6vw, 34px);
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1.4;
+    letter-spacing: -0.01em;
+    word-break: break-word;
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  /* 최신 문장 하이라이트 */
+  .final-text .latest {
+    color: #ffffff;
+    text-shadow: 0 0 20px rgba(91,106,240,0.6);
+  }
+  .final-text .old {
+    color: var(--muted);
+  }
+
+  /* 빈 상태 */
+  .empty-hint {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+    font-weight: 300;
+    line-height: 1.8;
+    pointer-events: none;
+    transition: opacity 0.4s;
+  }
+  .empty-hint.hidden { opacity: 0; }
+  .empty-icon { font-size: 40px; margin-bottom: 10px; display: block; }
+
+  /* ── 파형 시각화 ── */
+  .wave-container {
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 0 4px;
+  }
+  .wave-bar {
+    width: 3px;
+    border-radius: 2px;
+    background: var(--accent);
+    height: 4px;
+    transition: height 0.1s ease;
+    opacity: 0.6;
+  }
+  .listening .wave-bar {
+    animation: wave-idle 1.4s ease-in-out infinite;
+    opacity: 1;
+  }
+  @keyframes wave-idle {
+    0%,100% { height: 4px; }
+    50% { height: 20px; }
+  }
+  .wave-bar:nth-child(2) { animation-delay: 0.1s; }
+  .wave-bar:nth-child(3) { animation-delay: 0.2s; }
+  .wave-bar:nth-child(4) { animation-delay: 0.3s; }
+  .wave-bar:nth-child(5) { animation-delay: 0.2s; }
+  .wave-bar:nth-child(6) { animation-delay: 0.1s; }
+
+  /* ── 컨트롤 버튼 영역 ── */
+  .controls {
+    display: flex;
+    gap: 10px;
+  }
+
+  .btn-main {
+    flex: 1;
+    height: 64px;
+    border-radius: 16px;
+    border: none;
+    font-family: 'Noto Sans KR', sans-serif;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    transition: transform 0.12s, box-shadow 0.2s, background 0.3s;
+    outline: none;
+    -webkit-appearance: none;
+    letter-spacing: 0.04em;
+  }
+
+  .btn-main:active { transform: scale(0.96); }
+
+  .btn-start {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+    box-shadow: 0 4px 24px rgba(91,106,240,0.5);
+  }
+  .btn-stop {
+    background: linear-gradient(135deg, #ff4d6d, #ff7849);
+    color: #fff;
+    box-shadow: 0 4px 24px rgba(255,77,109,0.4);
+  }
+
+  .btn-clear {
+    width: 64px;
+    height: 64px;
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 20px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.12s, border-color 0.2s, color 0.2s;
+    outline: none;
+  }
+  .btn-clear:active { transform: scale(0.94); }
+  .btn-clear:hover { border-color: var(--red); color: var(--red); }
+
+  /* ── 상태 바 ── */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.05em;
+    padding-bottom: env(safe-area-inset-bottom, 4px);
+  }
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+  }
+  .status-dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.err { background: var(--red); }
+
+  /* ── 에러 토스트 ── */
+  .toast {
+    position: fixed;
+    bottom: 120px; left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: #2a1020;
+    border: 1px solid var(--red);
+    color: #ffa0b4;
+    padding: 12px 20px;
+    border-radius: 12px;
+    font-size: 13px;
+    opacity: 0;
+    transition: opacity 0.3s, transform 0.3s;
+    pointer-events: none;
+    z-index: 99;
+    white-space: nowrap;
+    max-width: 90vw;
+    white-space: normal;
+    text-align: center;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* 스크롤바 숨기기 */
+  .final-text::-webkit-scrollbar { display: none; }
+  .final-text { -ms-overflow-style: none; scrollbar-width: none; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- 헤더 -->
+  <header>
+    <div class="brand">
+      <div class="brand-dot"></div>
+      LIVE SUBTITLE
+    </div>
+    <select class="lang-select" id="langSelect">
+      <option value="ko-KR">🇰🇷 한국어</option>
+      <option value="en-US">🇺🇸 English</option>
+      <option value="ja-JP">🇯🇵 日本語</option>
+      <option value="zh-CN">🇨🇳 中文</option>
+      <option value="fr-FR">🇫🇷 Français</option>
+      <option value="es-ES">🇪🇸 Español</option>
+      <option value="de-DE">🇩🇪 Deutsch</option>
+    </select>
+  </header>
+
+  <!-- 자막 패널 -->
+  <div class="subtitle-panel" id="panel">
+    <div class="empty-hint" id="emptyHint">
+      <span class="empty-icon">🎙️</span>
+      버튼을 눌러<br>음성 인식을 시작하세요
+    </div>
+    <div class="final-text" id="finalText"></div>
+    <div class="interim-text" id="interimText"></div>
+  </div>
+
+  <!-- 파형 -->
+  <div class="wave-container" id="waveContainer">
+    <div class="wave-bar"></div>
+    <div class="wave-bar"></div>
+    <div class="wave-bar"></div>
+    <div class="wave-bar"></div>
+    <div class="wave-bar"></div>
+    <div class="wave-bar"></div>
+    <div class="wave-bar"></div>
+  </div>
+
+  <!-- 컨트롤 -->
+  <div class="controls">
+    <button class="btn-main btn-start" id="mainBtn" onclick="toggleListen()">
+      <span>▶</span> 시작
+    </button>
+    <button class="btn-clear" id="clearBtn" onclick="clearText()" title="지우기">🗑</button>
+  </div>
+
+  <!-- 상태 -->
+  <div class="status-bar">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">대기 중</span>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── 상태 ──────────────────────────────────────────────────────────
+let recognition = null;
+let isListening = false;
+let sentences = [];            // 확정된 문장들
+const MAX_SENTENCES = 6;       // 최대 표시 문장 수
+
+const panel = document.getElementById('panel');
+const finalDiv = document.getElementById('finalText');
+const interimDiv = document.getElementById('interimText');
+const emptyHint = document.getElementById('emptyHint');
+const mainBtn = document.getElementById('mainBtn');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const waveContainer = document.getElementById('waveContainer');
+const langSelect = document.getElementById('langSelect');
+
+// ── Web Speech API 지원 확인 ──────────────────────────────────────
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+if (!SpeechRecognition) {
+  showToast('⚠️ 이 브라우저는 음성 인식을 지원하지 않습니다.\nChrome(Android) 또는 Safari(iOS)를 사용해주세요.', 6000);
+  mainBtn.disabled = true;
+  mainBtn.style.opacity = '0.4';
+}
+
+// ── 인식 초기화 ───────────────────────────────────────────────────
+function initRecognition() {
+  recognition = new SpeechRecognition();
+  recognition.lang = langSelect.value;
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    setListeningUI(true);
+  };
+
+  recognition.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) {
+        addSentence(t.trim());
+        interim = '';
+      } else {
+        interim += t;
+      }
+    }
+    interimDiv.textContent = interim;
+    animateWave(interim.length > 0);
+  };
+
+  recognition.onerror = (e) => {
+    const msgs = {
+      'not-allowed': '마이크 권한이 거부되었습니다.\n브라우저 설정에서 마이크를 허용해주세요.',
+      'no-speech': null,   // 조용히 무시
+      'network': '네트워크 오류. 인터넷 연결을 확인해주세요.',
+      'aborted': null,
+    };
+    const msg = msgs[e.error];
+    if (msg) {
+      showToast('❌ ' + msg);
+      stopListening();
+    }
+  };
+
+  recognition.onend = () => {
+    interimDiv.textContent = '';
+    if (isListening) {
+      // 자동 재시작 (continuous가 끊기는 경우 대비)
+      try { recognition.start(); } catch(err) {}
+    } else {
+      setListeningUI(false);
+    }
+  };
+}
+
+// ── 시작 / 중지 토글 ─────────────────────────────────────────────
+function toggleListen() {
+  if (isListening) {
+    stopListening();
+  } else {
+    startListening();
+  }
+}
+
+function startListening() {
+  if (!SpeechRecognition) return;
+  isListening = true;
+  initRecognition();
+  try {
+    recognition.start();
+  } catch(e) {
+    showToast('마이크를 시작할 수 없습니다: ' + e.message);
+    isListening = false;
+  }
+}
+
+function stopListening() {
+  isListening = false;
+  if (recognition) {
+    recognition.abort();
+    recognition = null;
+  }
+  setListeningUI(false);
+  animateWave(false);
+}
+
+// ── UI 상태 업데이트 ──────────────────────────────────────────────
+function setListeningUI(on) {
+  if (on) {
+    mainBtn.innerHTML = '<span>⏹</span> 중지';
+    mainBtn.className = 'btn-main btn-stop';
+    panel.classList.add('active');
+    waveContainer.classList.add('listening');
+    statusDot.className = 'status-dot on';
+    statusText.textContent = '인식 중 · ' + langSelect.value;
+  } else {
+    mainBtn.innerHTML = '<span>▶</span> 시작';
+    mainBtn.className = 'btn-main btn-start';
+    panel.classList.remove('active');
+    waveContainer.classList.remove('listening');
+    statusDot.className = 'status-dot';
+    statusText.textContent = '대기 중';
+  }
+}
+
+// ── 자막 추가 ──────────────────────────────────────────────────────
+function addSentence(text) {
+  if (!text) return;
+  sentences.push(text);
+  if (sentences.length > MAX_SENTENCES) sentences.shift();
+  renderSentences();
+  emptyHint.classList.add('hidden');
+  // 스크롤 맨 아래로
+  requestAnimationFrame(() => {
+    finalDiv.scrollTop = finalDiv.scrollHeight;
+  });
+}
+
+function renderSentences() {
+  finalDiv.innerHTML = '';
+  sentences.forEach((s, i) => {
+    const span = document.createElement('span');
+    const isLatest = (i === sentences.length - 1);
+    span.className = isLatest ? 'latest' : 'old';
+    span.textContent = s + ' ';
+    finalDiv.appendChild(span);
+  });
+}
+
+function clearText() {
+  sentences = [];
+  finalDiv.innerHTML = '';
+  interimDiv.textContent = '';
+  emptyHint.classList.remove('hidden');
+}
+
+// ── 파형 애니메이션 ───────────────────────────────────────────────
+function animateWave(active) {
+  const bars = waveContainer.querySelectorAll('.wave-bar');
+  if (active) {
+    bars.forEach(b => {
+      const h = 8 + Math.random() * 32;
+      b.style.height = h + 'px';
+    });
+  }
+}
+
+// 인식 중 파형 랜덤 업데이트
+setInterval(() => {
+  if (isListening) animateWave(true);
+}, 120);
+
+// ── 언어 변경 ──────────────────────────────────────────────────────
+langSelect.addEventListener('change', () => {
+  if (isListening) {
+    stopListening();
+    setTimeout(startListening, 200);
+  }
+});
+
+// ── 토스트 알림 ───────────────────────────────────────────────────
+function showToast(msg, duration = 4000) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), duration);
+}
+
+// ── 화면 꺼짐 방지 (WakeLock API) ───────────────────────────────
+async function requestWakeLock() {
+  try {
+    if ('wakeLock' in navigator) {
+      await navigator.wakeLock.request('screen');
+    }
+  } catch(e) {}
+}
+requestWakeLock();
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') requestWakeLock();
+});
+</script>
+</body>
+</html>
